@@ -155,6 +155,88 @@ dgolub=> select start_week,count(distinct uid) as b, sum(cost) as ac, sum(cost)/
          10 |  16 |   5842 |          365.125
             | 273 |  94505 | 346.172161172161
 (11 rows)
-
 ```
 
+Заполнив таблицу с помощью Python-овской программы, столкнулся с двойным учётом покупателей. Видимо, нужно все покупки пользвателя относить
+к той неделе, когда он купил что-нибудь в первый раз.  Для облегчения себе жизни создал таблицу с первыми покупками пользователей.
+
+```
+create table prj1.first_buy as 
+select uid,min(date) as fpdate, min(week) as fpweek from prj1.log 
+where sum is not null 
+group by uid 
+order by min(date);
+```
+
+
+Промежуточный результат — объединённая таблица с логом, несколько строк:
+
+```
+dgolub=> select *
+from prj1.log as l
+inner join
+prj1.user as u on l.uid = u.uid
+inner join
+prj1.first_buy as f on l.uid = f.uid
+limit 10;
+
+ uid  |    date    | event_type | sum  | month | week | uid  |    source    |   region   | cost | first_visit | start_mon | start_week | uid  |   fpdate   | fpweek 
+------+------------+------------+------+-------+------+------+--------------+------------+------+-------------+-----------+------------+------+------------+--------
+   63 | 2014-01-02 | visit      |      |     1 |    1 |   63 | smm          | moscow     |  474 | 2014-01-01  |         1 |          1 |   63 | 2014-01-01 |      1
+   82 | 2014-01-08 | visit      |      |     1 |    2 |   82 | seo          | moscow     |  398 | 2014-01-01  |         1 |          1 |   82 | 2014-01-08 |      2
+   98 | 2014-01-08 | visit      |      |     1 |    2 |   98 | smm          | vladimir   |  286 | 2014-01-02  |         1 |          1 |   98 | 2014-01-02 |      1
+  176 | 2014-01-19 | visit      |      |     1 |    3 |  176 | seo          | vladimir   |  477 | 2014-01-02  |         1 |          1 |  176 | 2014-01-10 |      2
+ 3334 | 2014-03-03 | visit      |      |     3 |   10 | 3334 | seo          | volgograd  |  396 | 2014-02-22  |         2 |          8 | 3334 | 2014-02-23 |      8
+  256 | 2014-01-02 | visit      |      |     1 |    1 |  256 | cpc_adwords  | moscow     |  385 | 2014-01-02  |         1 |          1 |  256 | 2014-01-04 |      1
+  256 | 2014-01-04 | visit      |      |     1 |    1 |  256 | cpc_adwords  | moscow     |  385 | 2014-01-02  |         1 |          1 |  256 | 2014-01-04 |      1
+  256 | 2014-01-04 | purchase   | 1587 |     1 |    1 |  256 | cpc_adwords  | moscow     |  385 | 2014-01-02  |         1 |          1 |  256 | 2014-01-04 |      1
+  268 | 2014-01-03 | visit      |      |     1 |    1 |  268 | seo          | vladimir   |  417 | 2014-01-01  |         1 |          1 |  268 | 2014-01-06 |      2
+  268 | 2014-01-01 | visit      |      |     1 |    1 |  268 | seo          | vladimir   |  417 | 2014-01-01  |         1 |          1 |  268 | 2014-01-06 |      2
+```
+
+Тогда список пользователей из январской когорты, у которых первая покупка тоже пришлась на январь, выдаются так:
+
+```
+dgolub=> select count(distinct uid)
+from prj1.log as l
+inner join
+prj1.user as u on l.uid = u.uid
+inner join
+prj1.first_buy as f on l.uid = f.uid
+limit 10;
+```
+
+```
+select count(distinct u.uid) from prj1.log as l left join prj1.user as u on l.uid = u.uid left join prj1.first_buy as b on l.uid = b.uid where sum is not null and u.start_week=1 and b.fpweek=1 and week=2;
+```
+
+UPD: можно выставить использование схемы по умолчанию и далее пользоваться короткими названиями таблиц.
+```
+SET search_path TO prj1;
+
+dgolub=> \d
+          List of relations
+ Schema |   Name    | Type  | Owner  
+--------+-----------+-------+--------
+ prj1   | first_buy | table | dgolub
+ prj1   | log       | table | dgolub
+ prj1   | user      | table | dgolub
+```
+
+Разбивка покупателей по когортам и неделям, в которую была совершена первая покупка:
+
+```
+select u.start_week, b.fpweek, count(distinct u.uid) from prj1.log as l left join prj1.user as u on l.uid = u.uid left join prj1.first_buy as b on l.uid = b.uid where sum is not null group by u.start_week,b.fpweek order by u.start_week,b.fpweek;
+
+start_week | fpweek | count 
+------------+--------+-------
+          1 |      1 |   188
+          1 |      2 |    58
+          1 |      3 |    13
+          1 |      4 |     1
+...
+          8 |     10 |     7
+          9 |      9 |   161
+          9 |     10 |    30
+         10 |     10 |     7
+```
