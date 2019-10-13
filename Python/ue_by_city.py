@@ -53,6 +53,178 @@ def pandas_df_by_region_and_source(data_list) -> pd.DataFrame:
         newDF.loc[src, reg] = data
     return newDF
 
+
+# SQL queries templates
+
+## Получение глобальных параметров юнит-экономики для всей БД.
+GLOBAL_PARAMS = """
+    with 
+        apc as (
+            select count(*)*1.0/count(distinct uid) as apc from prj1.log where sum is not null
+        ),
+        avp as (
+            select sum(l.sum)/count(*) as avp from prj1.log as l where l.sum is not null
+        ),
+        ua as (
+            select count(distinct uid) as ua from prj1.log
+        ),
+        cpa as (
+            -- пользователей, имеющихся в таблице user, но не заходивших на сайт, 
+            -- отрезаем с помощью поля first_visit
+            select sum(cost)/count(distinct uid) as cpa from prj1.user where first_visit is not null
+        ),
+        c1 as (
+            select count(distinct p.uid)*1.0/count(distinct l.uid) as c1
+            from prj1.log as l left join prj1.first_buy as p using (uid)
+        ),
+        db_metrics as (
+            select apc, avp, ua, cpa, c1
+            from apc cross join avp cross join ua cross join cpa cross join c1
+        )
+        select 
+            apc, avp, ua, cpa,
+            c1   * 100        as "c1 %",
+            avp  * apc        as arpc,
+            avp  * apc * c1   as arpu,
+            (avp * apc * c1 * 100)/cpa  as "romi %"
+        from db_metrics;
+
+    """
+
+## Получение параметров юнит-экономики параметризованным запросом: первый параметр функции 'format'
+## может быть 'source', 'region' или их комбинация: 'source, region' или 'region, source'
+METRICS_BY_PARAM_TMPL = """
+    with 
+        apc as (
+            select 
+                {0},count(*)*1.0/count(distinct uid) as apc 
+            from prj1.log natural join prj1.user 
+            where sum is not null
+            group by {0}
+        ),
+        avp as (
+            select {0}, sum(l.sum)/count(*) as avp 
+            from prj1.log as l natural join prj1.user
+            where l.sum is not null
+            group by {0}
+        ),
+        ua as (
+            select {0},count(distinct uid) as ua 
+            from prj1.log natural join prj1.user
+            group by {0}
+        ),
+        cpa as (
+            -- пользователей, имеющихся в таблице user, но не заходивших на сайт, 
+            -- отрезаем с помощью поля first_visit
+            select {0}, sum(cost)/count(distinct uid) as cpa 
+            from prj1.user 
+            where first_visit is not null
+            group by {0}
+        ),
+        c1 as (
+            select 
+                {0}, count(distinct p.uid)*1.0/count(distinct l.uid) as c1
+            from 
+                prj1.log as l 
+                left join prj1.first_buy as p using (uid) 
+                join prj1.user using (uid)
+            group by {0}
+        ),
+        db_metrics as (
+            select {0}, apc, avp, ua, cpa, c1
+            from 
+                apc 
+                join avp using ({0})
+                join ua  using ({0})
+                join cpa using ({0})
+                join c1  using ({0})
+        )
+        select 
+            {0}, apc, avp, ua, cpa,
+            c1   * 100        as "c1 %",
+            avp  * apc        as arpc,
+            avp  * apc * c1   as arpu,
+            (avp * apc * c1 * 100)/cpa  as "romi %"
+        from db_metrics
+        order by {0};
+"""
+
+##
+## Все get_ - функции получают первым параметром объект класса psycopg2.extensions.cursor,
+## который обеспечивает связь с БД.  После выполнения запроса методом '.execute' этого
+## класса, необходимо забрать результаты методом '.fetchone' (возвращается кортеж полей)
+## или методом '.fetchall' (возвращается список кортежей)
+
+def get_globals(db_cursor) -> pd.DataFrame:
+    """Возвращает глобальные параметры юнит-экономики: все регионы, 
+    все методы привлечения"""
+    temp_dict = {}
+    db_cursor.execute(GLOBAL_PARAMS)
+    (temp_dict['apc'], temp_dict['avp'], temp_dict['ua'], temp_dict['cpa'],
+        temp_dict['c1%'], temp_dict['arpc'], temp_dict['arpu'],
+        temp_dict['romi%']) = db_cursor.fetchone()
+    print("Dict filled, creating dataframe...")
+    df = pd.DataFrame(temp_dict, index=['Totals'])
+    return df
+
+def check_ue_grouping(grouping) -> (bool, str):
+    """Проверяет строку на то, что это корректные параметры для группировки.
+    grouping может быть None, строка или кортеж.
+    Возвращает всегда кортеж из 2 значений:
+    1) Булевое, корректна ли группировка
+    2) строка для группировки (lower-case, если два параметра - они через запятую).
+    """
+    ret_bool = False
+    permitted_words = {'source', 'region'}
+    if grouping is None:
+        ret_str = 'none'
+    elif type(grouping) is str:
+        grouping = grouping.lower()
+        if grouping in permitted_words:
+            ret_str = grouping
+        else:
+            return (False, None)
+    elif type(grouping) is tuple:
+        if  len(grouping) != 2:
+            return (False, None)
+        (first, last) = [l.lower() for l in grouping]
+        if (first in permitted_words and
+            last  in permitted_words and
+            first != last):
+                ret_str = '{},{}'.format(first, last)
+        else:
+            return(False, None)
+    else:
+        return(False, None)
+    # good exit
+    return (True, ret_str)
+
+def get_ue_params_by(db_cursor, grouping=None) -> pd.DataFrame:
+    """Возвращает параметры юнит-экономики в соответствии с заданной
+    группировкой. Параметры: 
+    1) Объект для связи с БД
+    2) Метод группировки. Одно из пяти значений:
+      - None (default) -- Вызвать ф-ю get_globals() и вернуть её результат.
+      - 'source' -- юнит-экономика (UE) в разрезе методов привлечения.
+      - 'region' -- UE в разрезе регионов проживания пользователей.
+      - ('source', 'region') -- группировка по методу, потом по региону.
+      - ('region', 'source') -- группировка по региону и методу.
+    """
+    if grouping is None:
+        return get_globals(db_cursor)
+
+    (Ok, group_by) = check_ue_grouping(grouping)
+    if Ok is False:
+        print('*ERR* Incorrect grouping specified')
+        return None
+    req = METRICS_BY_PARAM_TMPL.format(group_by)
+    print ("*DBG* database request:\n", req)
+    db_cursor.execute(req)
+    ue_grouped = db_cursor.fetchall()
+    return pd.DataFrame(ue_grouped)
+
+
+
 def get_apc(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> tuple:
     """Возвращает среднее количество покупок на пользователя глобально и в
     разрезе регионов и способов привлечения.
@@ -63,12 +235,33 @@ def get_apc(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> 
     MATRIX_REQ = """
         select 
             region,source,
-            round(count(*)*1.0/count(distinct uid),2) as apc 
+            count(*)*1.0/count(distinct uid) as apc 
         from 
             prj1.log natural join prj1.user 
         where sum is not null 
-        group by region,source;
+        group by region, source
+        order by source, region;
         """
+    BYREGION_REQ = """
+        select 
+            region,
+            count(*)*1.0/count(distinct uid) as apc 
+        from 
+            prj1.log natural join prj1.user 
+        where sum is not null 
+        group by region
+        order by region;
+    """
+    BYSOURCE_REQ = """
+        select 
+            source,
+            count(*)*1.0/count(distinct uid) as apc 
+        from 
+            prj1.log natural join prj1.user 
+        where sum is not null 
+        group by source
+        order by source;
+    """
 
     # Среднее по всем регионам и методам привлечения
     db_cursor.execute(AVERAGE_REQ)
@@ -76,23 +269,67 @@ def get_apc(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> 
     
     # В координатах "регион-метод":
     db_cursor.execute(MATRIX_REQ)
-    df = pandas_df_by_region_and_source(db_cursor.fetchall())
-    return (very_average_apc, df)
+    apc_df = pandas_df_by_region_and_source(db_cursor.fetchall())
+    
+    # по регионам
+    db_cursor.execute(BYREGION_REQ)
+    apc_by_region = db_cursor.fetchall()
+
+    # По способам привлечения
+    db_cursor.execute(BYSOURCE_REQ)
+    apc_by_source = db_cursor.fetchall()
+
+    return (very_average_apc, apc_df, apc_by_region, apc_by_source)
+
+
+def get_avg_check(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> tuple:
+    AVERAGE_REQ = """select sum(l.sum)/count(*) as avp 
+        from prj1.log as l where l.sum is not null"""
+
+    MATRIX_REQ = """
+        select 
+            region,source,
+            sum(l.sum)/count(*) as avp 
+        from 
+            prj1.log as l natural join prj1.user as u
+        where l.sum is not null 
+        group by u.region, u.source
+        order by u.source, u.region;
+        """
+    # Среднее по всем регионам и методам привлечения
+    db_cursor.execute(AVERAGE_REQ)
+    (very_average_avp,) = db_cursor.fetchone()
+    
+    # В координатах "регион-метод":
+    db_cursor.execute(MATRIX_REQ)
+    avp_df = pandas_df_by_region_and_source(db_cursor.fetchall())
+    return (very_average_avp, avp_df)
 
 
 def print_db_data(db_cursor: psycopg2.extensions.cursor):
-    (apc, apc_by_reg_src) = get_apc(db_cursor)
-    print("Total APC: {:.2f}".format(apc))
-    print(apc_by_reg_src)
+    print("Global data (all regions, all sources)")
+    print(get_globals(db_cursor))
+
+    print('Data by source')
+    print(get_ue_params_by(db_cursor, 'source'))
+
+    print('Data by source')
+    print(get_ue_params_by(db_cursor, 'region'))
+
+    print('Data by source and region')
+    print(get_ue_params_by(db_cursor, ('source', 'region')))
     return
 
 def do_work():
+    db_conn = None
     try:
         db_conn = psycopg2.connect(DB_CONNECT_STRING)
         cursor = db_conn.cursor()
         print_db_data(cursor)
-    except (Exception, psycopg2.Error) as error :
+    except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
+    except Exception:
+        print ("Non-DB error, check your program")
     finally:
         if db_conn:
             cursor.close()
@@ -103,131 +340,3 @@ if __name__ == "__main__":
     do_work()
     exit(0)
 
-#def get_cohort_users_count(db_cursor: psycopg2.extensions.cursor) -> [int]:
-#    "Возвращает количество пользователей в когорте как список целых чисел"
-#    count_list = []
-#    for week_num in MY_WEEKS:
-#        db_cursor.execute("SELECT count(uid) from prj1.user where start_week={};".format(week_num))
-#        (ua,) = db_cursor.fetchone()
-#        count_list.append(ua)
-#    return count_list
-#
-#def get_cohort_ap(db_cursor: psycopg2.extensions.cursor) -> [float]:
-#    "возвращает стоимость привлечения пользователей как список вещественных чисел"
-#    sums_list = []
-#    for week_num in MY_WEEKS:
-#        db_cursor.execute("SELECT sum(cost) from prj1.user where start_week={};".format(week_num))
-#        (uap,) = db_cursor.fetchone()
-#        sums_list.append(uap)
-#    return sums_list
-#
-#def request_by_cohort_and_week(db_cursor: psycopg2.extensions.cursor, req: str) -> []:
-#    """Выполняет запрос в базу, возвращает результат как список строк, где каждая строка -- кортеж полей"""
-#    db_cursor.execute(req)
-#    return db_cursor.fetchall()
-#
-#
-#def pandas_df_by_cohort_and_week(data_list) -> pd.DataFrame:
-#    """
-#    Формирует датафрейм из данных, которые переданы функции в качестве параметра.
-#    Формат данных: когорта, неделя, значение. В получившемся датафрейме когорты будут строками,
-#    недели столбцами, значения, естественно, ячейками.
-#    """
-#    newDF = pd.DataFrame()
-#    for (cohort, week, data) in data_list:
-#        newDF.loc[cohort, week] = data
-#    return newDF
-#
-#COHORT_WEEK_QUERY_TEMPLATE="""select u.start_week, l.week, {0}
-#    from prj1.log as l natural join prj1.user as u
-#    where u.start_week is not null and
-#    {1}
-#    group by u.start_week, l.week
-#    order by u.start_week, l.week;"""
-#
-#def get_users_by_cohort_week(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """
-#    Возвращает количество ПОСЕТИТЕЛЕЙ с разбивкой по когортам и неделям в виде Pandas Dataframe
-#    """
-#    req = COHORT_WEEK_QUERY_TEMPLATE.format("count(distinct l.uid)", "l.sum is null")
-#    print("Request to DB: {}\n".format(req))
-#    print("== USERS ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
-#def get_buyers_by_cohort_week(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """
-#    Возвращает количество ПОКУПАТЕЛЕЙ с разбивкой по когортам и неделям в виде Pandas Dataframe
-#    """
-#    req = """select u.start_week, b.fpweek, count(distinct u.uid)
-#        from prj1.log as l left join prj1.user as u on l.uid = u.uid left join prj1.first_buy as b on l.uid = b.uid
-#        where sum is not null
-#        group by u.start_week, b.fpweek
-#        order by u.start_week, b.fpweek;"""
-#    print("Request to DB: {}\n".format(req))
-#    print("== BUYERS ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
-#def get_transactions_by_cohort_week_old(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """
-#    Возвращает количество транзакций, совершённых участниками когорт с разбивкой по когортам и неделям
-#    """
-#    req = COHORT_WEEK_QUERY_TEMPLATE.format("count(*)", "l.sum is not null and l.sum > 0")
-#    print("Request to DB: {}\n".format(req))
-#    print("== TRANSACTIONS ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
-#def get_transactions_by_cohort_week(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """
-#    Возвращает количество транзакций, совершённых участниками когорт с разбивкой по когортам и неделям
-#    """
-#    req = """
-#    select 
-#        start_week, fpweek, count(uid) 
-#    from 
-#        prj1.log join prj1.user using(uid) 
-#                 join prj1.first_buy using (uid) 
-#    where sum is not null 
-#    group by start_week, fpweek 
-#    order by start_week, fpweek;
-#    """
-#    print("Request to DB: {}\n".format(req))
-#    print("== TRANSACTIONS ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
-#def get_apc_by_cohort_week(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """Возвращает APC за неделю по когортам
-#    APC считаетя, как 1/(число пользователей когорты, которые впервые совершили покупку
-#    в данную неделю) * число транзакций, совершённых этими пользователями __за всё время__."""
-#    req = """
-#        select 
-#            u.start_week, 
-#            l.week, 
-#            count(uid)*1.0/count(distinct uid) as apc
-#        from 
-#            prj1.log as l 
-#            join prj1.user as u using (uid)
-#            join prj1.first_buy as fb using (uid)
-#        where 
-#            u.start_week is not null 
-#            and
-#            l.sum is not null 
-#            and 
-#            l.sum > 0
-#            and
-#            l.week = fb.fpweek
-#        group by u.start_week, l.week
-#        order by u.start_week, l.week;
-#    """
-#    print("Request to DB: {}\n".format(req))
-#    print("== APC ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
-#def get_gross_profit_by_cohort_week(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
-#    """
-#    Возвращает суммарную стоимость покупок с разбивкой по когортам и неделям
-#    """
-#    req = COHORT_WEEK_QUERY_TEMPLATE.format("sum(sum)", "l.sum is not null and l.sum > 0")
-#    print("Request to DB: {}\n".format(req))
-#    print("== TRANSACTIONS ==")
-#    return pandas_df_by_cohort_and_week(request_by_cohort_and_week(db_cursor, req))
-#
