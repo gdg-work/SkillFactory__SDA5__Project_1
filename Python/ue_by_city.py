@@ -12,6 +12,7 @@
 """
 import psycopg2
 import pandas as pd
+from collections import deque
 
 # pseudo constants
 MY_WEEKS = range(1,11)
@@ -28,31 +29,7 @@ ARPC в нашем случае 100% маржи считается как AvP * 
 среднее число покупок на покупателя, то есть T/B, где T-Transactions, B-Byers.
 """
 
-# Шаблоны для запросов.  
-# Это запрос в таблицу 'log' базы данных, не ссылающийся на таблицу 'user'
-TMPL_NOPARAM = """
-    select {0}
-    from prj1.log
-    where sum is not null;
-    """
-# Запрос к соединению таблиц log и user
-TMPL_PARAM = """
-    select {0}
-    from prj1.log join prj1.user using (uid) 
-    where sum is not null AND {1};
-    """
-def pandas_df_by_region_and_source(data_list) -> pd.DataFrame:
-    """
-    Формирует датафрейм из данных, которые переданы функции в качестве параметра.
-    Формат данных: регион, способ привлечения, значение. 
-    В получившемся датафрейме способы привлечения будут строками,
-    регионы столбцами, значения -- ячейками.
-    """
-    newDF = pd.DataFrame()
-    for (reg, src, data) in data_list:
-        newDF.loc[src, reg] = data
-    return newDF
-
+METRIC_NAMES = ('apc', 'avp', 'ua', 'cpa', 'c1%', 'arpc', 'arpu', 'romi%')
 
 # SQL queries templates
 
@@ -209,115 +186,53 @@ def get_ue_params_by(db_cursor, grouping=None) -> pd.DataFrame:
       - 'region' -- UE в разрезе регионов проживания пользователей.
       - ('source', 'region') -- группировка по методу, потом по региону.
       - ('region', 'source') -- группировка по региону и методу.
+
     """
     if grouping is None:
         return get_globals(db_cursor)
 
-    (Ok, group_by) = check_ue_grouping(grouping)
-    if Ok is False:
+    (Result, group_by) = check_ue_grouping(grouping)
+    if Result is False:
         print('*ERR* Incorrect grouping specified')
         return None
     req = METRICS_BY_PARAM_TMPL.format(group_by)
-    print ("*DBG* database request:\n", req)
+    # print ("*DBG* database request:\n", req)
     db_cursor.execute(req)
     ue_grouped = db_cursor.fetchall()
     return pd.DataFrame(ue_grouped)
 
 
-
-def get_apc(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> tuple:
-    """Возвращает среднее количество покупок на пользователя глобально и в
-    разрезе регионов и способов привлечения.
-    """
-    AVERAGE_REQ = """select count(*)*1.0/count(distinct uid) as apc 
-        from prj1.log where sum is not null"""
-
-    MATRIX_REQ = """
-        select 
-            region,source,
-            count(*)*1.0/count(distinct uid) as apc 
-        from 
-            prj1.log natural join prj1.user 
-        where sum is not null 
-        group by region, source
-        order by source, region;
-        """
-    BYREGION_REQ = """
-        select 
-            region,
-            count(*)*1.0/count(distinct uid) as apc 
-        from 
-            prj1.log natural join prj1.user 
-        where sum is not null 
-        group by region
-        order by region;
-    """
-    BYSOURCE_REQ = """
-        select 
-            source,
-            count(*)*1.0/count(distinct uid) as apc 
-        from 
-            prj1.log natural join prj1.user 
-        where sum is not null 
-        group by source
-        order by source;
-    """
-
-    # Среднее по всем регионам и методам привлечения
-    db_cursor.execute(AVERAGE_REQ)
-    (very_average_apc,) = db_cursor.fetchone()
-    
-    # В координатах "регион-метод":
-    db_cursor.execute(MATRIX_REQ)
-    apc_df = pandas_df_by_region_and_source(db_cursor.fetchall())
-    
-    # по регионам
-    db_cursor.execute(BYREGION_REQ)
-    apc_by_region = db_cursor.fetchall()
-
-    # По способам привлечения
-    db_cursor.execute(BYSOURCE_REQ)
-    apc_by_source = db_cursor.fetchall()
-
-    return (very_average_apc, apc_df, apc_by_region, apc_by_source)
-
-
-def get_avg_check(db_cursor: "psycopg2.extensions.cursor, коннект в БД") -> tuple:
-    AVERAGE_REQ = """select sum(l.sum)/count(*) as avp 
-        from prj1.log as l where l.sum is not null"""
-
-    MATRIX_REQ = """
-        select 
-            region,source,
-            sum(l.sum)/count(*) as avp 
-        from 
-            prj1.log as l natural join prj1.user as u
-        where l.sum is not null 
-        group by u.region, u.source
-        order by u.source, u.region;
-        """
-    # Среднее по всем регионам и методам привлечения
-    db_cursor.execute(AVERAGE_REQ)
-    (very_average_avp,) = db_cursor.fetchone()
-    
-    # В координатах "регион-метод":
-    db_cursor.execute(MATRIX_REQ)
-    avp_df = pandas_df_by_region_and_source(db_cursor.fetchall())
-    return (very_average_avp, avp_df)
-
-
-def print_db_data(db_cursor: psycopg2.extensions.cursor):
+def print_ue_data(db_cursor: psycopg2.extensions.cursor):
+    headers = deque()
     print("Global data (all regions, all sources)")
     print(get_globals(db_cursor))
 
-    print('Data by source')
-    print(get_ue_params_by(db_cursor, 'source'))
+    print('\nData by source')
+    headers.clear()
+    headers.append('source')
+    headers.extend(METRIC_NAMES)
+    df = get_ue_params_by(db_cursor, 'source')
+    df.columns = headers
+    print(df)
+    print(df.to_csv())
 
-    print('Data by source')
-    print(get_ue_params_by(db_cursor, 'region'))
+    print('\nData by region')
+    headers.clear()
+    headers.append('Region')
+    headers.extend(METRIC_NAMES)
+    df = get_ue_params_by(db_cursor, 'region')
+    df.columns = headers
+    print(df)
+    print(df.to_csv())
 
-    print('Data by source and region')
-    print(get_ue_params_by(db_cursor, ('source', 'region')))
+    headers.clear()
+    headers.extend(('source', 'region'))
+    headers.extend(METRIC_NAMES)
+    print('\nData by source and region')
+    df = get_ue_params_by(db_cursor, ('source', 'region'))
+    df.columns = headers
+    print(df)
+    print(df.to_csv())
     return
 
 def do_work():
@@ -325,16 +240,19 @@ def do_work():
     try:
         db_conn = psycopg2.connect(DB_CONNECT_STRING)
         cursor = db_conn.cursor()
-        print_db_data(cursor)
+        print_ue_data(cursor)
     except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
-    except Exception:
-        print ("Non-DB error, check your program")
+    except Exception as error:
+        print ("Non-DB error, check your program: ", error)
     finally:
         if db_conn:
             cursor.close()
             db_conn.close()
             print("The database connection is closed")
+
+# import argparse
+
 
 if __name__ == "__main__":
     do_work()
