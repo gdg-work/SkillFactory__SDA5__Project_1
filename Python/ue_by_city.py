@@ -12,7 +12,6 @@
 """
 import psycopg2
 import pandas as pd
-from collections import deque
 
 # pseudo constants
 MY_WEEKS = range(1,11)
@@ -140,7 +139,6 @@ def get_globals(db_cursor) -> pd.DataFrame:
     (temp_dict['apc'], temp_dict['avp'], temp_dict['ua'], temp_dict['cpa'],
         temp_dict['c1%'], temp_dict['arpc'], temp_dict['arpu'],
         temp_dict['romi%']) = db_cursor.fetchone()
-    print("Dict filled, creating dataframe...")
     df = pd.DataFrame(temp_dict, index=['Totals'])
     return df
 
@@ -201,46 +199,73 @@ def get_ue_params_by(db_cursor, grouping=None) -> pd.DataFrame:
     ue_grouped = db_cursor.fetchall()
     return pd.DataFrame(ue_grouped)
 
+def get_data_by_source(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
+    """Запрос общих данных по всем регионам, для разных методов привлечения
+    пользователей.
+    Параметры: 1) Курсор для доступа к БД
+    Возвращает: дата-фрейм, по горизонтали переменные, 
+        по вертикали методы привлечения
+    Использует глобальную константу METRIC_NAMES
+    """
+    hdrs = ['source']
+    hdrs.extend(METRIC_NAMES)
+    source_df = get_ue_params_by(db_cursor, 'source')
+    source_df.columns = hdrs
+    source_df.set_index('source', inplace=True)
+    return(source_df)
 
-def print_ue_data(db_cursor: psycopg2.extensions.cursor):
-    headers = deque()
-    print("Global data (all regions, all sources)")
-    print(get_globals(db_cursor))
+def get_data_by_region(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
+    """Запрос общих данных по различным регионам, без разделения
+    методов привлечения пользователей.
+    Параметры: 1) Курсор для доступа к БД
+    Возвращает: дата-фрейм, по горизонтали метрики UE, по вертикали регионы
+    Использует глобальную константу METRIC_NAMES
+    """
+    hdrs = ['region']
+    hdrs.extend(METRIC_NAMES)
+    region_df = get_ue_params_by(db_cursor, 'region')
+    region_df.columns = hdrs
+    region_df.set_index(('region'), inplace=True)
+    return region_df
 
-    print('\nData by source')
-    headers.clear()
-    headers.append('source')
+def get_data_by_src_reg(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
+    """Запрос большой таблицы по регионам и методам привлечения (3-мерный куб)
+    Параметры: 1) Курсор для доступа к БД
+    Возвращает: дата-фрейм, по горизонтали метрики UE, 
+                            по вертикали двойной индекс: регионы и методы
+    Использует глобальную константу METRIC_NAMES
+    """
+    headers= ['source', 'region']
     headers.extend(METRIC_NAMES)
-    df = get_ue_params_by(db_cursor, 'source')
-    df.columns = headers
-    print(df)
-    print(df.to_csv())
+    src_reg_df = get_ue_params_by(db_cursor, ('source', 'region'))
+    src_reg_df.columns = headers
+    src_reg_df.set_index('source','region', inplace=True)
+    return src_reg_df
 
-    print('\nData by region')
-    headers.clear()
-    headers.append('Region')
-    headers.extend(METRIC_NAMES)
-    df = get_ue_params_by(db_cursor, 'region')
-    df.columns = headers
-    print(df)
-    print(df.to_csv())
+def compute_ue_data(db_cursor: psycopg2.extensions.cursor):
+    """расчёт данных юнит-экономики.  Параметры: объект 'cursor' для доступа к БД.
+    Возвращает DICT, где ключи - имена таблиц для печати, а значения - сами эти
+    таблицы (data frame-ы)
+    """
+    ret_dict = {}
+    ret_dict['Global data']    =  get_globals(db_cursor)
+    ret_dict['Data by source'] = get_data_by_source(db_cursor)
+    ret_dict['Data by region'] = get_data_by_region(db_cursor)
+    ret_dict['Src and Region'] = get_data_by_src_reg(db_cursor)
+    return ret_dict
 
-    headers.clear()
-    headers.extend(('source', 'region'))
-    headers.extend(METRIC_NAMES)
-    print('\nData by source and region')
-    df = get_ue_params_by(db_cursor, ('source', 'region'))
-    df.columns = headers
-    print(df)
-    print(df.to_csv())
-    return
+def print_ue_data(data_frames_dict):
+    """Just prints all DF's"""
+    for k,v in data_frames_dict.items():
+        print("\n\n", k, "\n", v)
 
 def do_work():
     db_conn = None
     try:
         db_conn = psycopg2.connect(DB_CONNECT_STRING)
         cursor = db_conn.cursor()
-        print_ue_data(cursor)
+        data_frames = compute_ue_data(cursor)
+        print_ue_data(data_frames)
     except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
     except Exception as error:
@@ -258,3 +283,7 @@ if __name__ == "__main__":
     do_work()
     exit(0)
 
+
+# access to DF: srdf.loc[:,['region','apc']]
+#
+#
