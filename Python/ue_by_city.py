@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
 """
 Расчёт ROMI, базируясь на данных из БД.
-В этот раз нам нужен не когортный анализ, а подсчёт ROMI для текущего состояния проекта и разбивка его по двум
-переменным: городу, где находится клиент, и способу привлечения клиента.
+В этот раз нам нужен не когортный анализ, а подсчёт ROMI для текущего
+состояния проекта и разбивка его по двум переменным: городу, где находится
+клиент, и способу привлечения клиента.
 
 Города:
-    vladimir, ekb, spb, volgograd, orel, moscow,
+    vladimir, ekb, spb, volgograd, orel, moscow, 
 Способы привлечения:
     cpc_direct, cpc_adwords, smm, seo
 (и то и другое получается из таблицы users простыми запросами)
-"""
-import psycopg2
-import pandas as pd
 
-# pseudo constants
-MY_WEEKS = range(1,11)
-DB_CONNECT_STRING="user=dgolub password=VunLurk5lam host=172.17.0.2 port=5432 dbname=dgolub"
-
-""" Что есть ROMI? Это ARPU/CPA, где ARPU - "грязный" доход на пользователя, а
+Что есть ROMI? Это ARPU/CPA, где ARPU - "грязный" доход на пользователя, а
 CPA - стоимость привлечения.  Стоимость привлечения пользователя легко
 посчитать из таблиц log и user, зная стоимость привлечения пользователя и его
 домашний регион.
@@ -28,13 +22,21 @@ ARPC в нашем случае 100% маржи считается как AvP * 
 среднее число покупок на покупателя, то есть T/B, где T-Transactions, B-Byers.
 """
 
-METRIC_NAMES = ('apc', 'avp', 'ua', 'cpa', 'c1%', 'arpc', 'arpu', 'romi%')
+import psycopg2
+import pandas as pd
+
+# pseudo constants
+MY_WEEKS = range(1,11)
+DB_CONNECT_STRING="user=dgolub password=VunLurk5lam host=172.17.0.2 port=5432 dbname=dgolub"
+
+METRIC_NAMES = ('apc', 'avp', 'ua', 'cpa', 'c1', 'arpc', 'arpu', 'romi')
 
 # SQL queries templates
 
 ## Получение глобальных параметров юнит-экономики для всей БД.
+## Полный SQL запрос в константе, здесь нечего параметризовать
 GLOBAL_PARAMS = """
-    with
+    with 
         apc as (
             select count(*)*1.0/count(distinct uid) as apc from prj1.log where sum is not null
         ),
@@ -45,7 +47,7 @@ GLOBAL_PARAMS = """
             select count(distinct uid) as ua from prj1.log
         ),
         cpa as (
-            -- пользователей, имеющихся в таблице user, но не заходивших на сайт,
+            -- пользователей, имеющихся в таблице user, но не заходивших на сайт, 
             -- отрезаем с помощью поля first_visit
             select sum(cost)/count(distinct uid) as cpa from prj1.user where first_visit is not null
         ),
@@ -57,48 +59,47 @@ GLOBAL_PARAMS = """
             select apc, avp, ua, cpa, c1
             from apc cross join avp cross join ua cross join cpa cross join c1
         )
-        select
+        select 
             apc, avp, ua, cpa,
-            c1   * 100        as "c1 %",
+            c1   * 100        as "c1",
             avp  * apc        as arpc,
             avp  * apc * c1   as arpu,
-            (avp * apc * c1 * 100)/cpa  as "romi %"
+            (avp * apc * c1 * 100)/cpa  as "romi"
         from db_metrics;
-
     """
 
 ## Получение параметров юнит-экономики параметризованным запросом: первый параметр функции 'format'
 ## может быть 'source', 'region' или их комбинация: 'source, region' или 'region, source'
 METRICS_BY_PARAM_TMPL = """
-    with
+    with 
         apc as (
-            select
-                {0},count(*)*1.0/count(distinct uid) as apc
-            from prj1.log natural join prj1.user
+            select 
+                {0},count(*)*1.0/count(distinct uid) as apc 
+            from prj1.log natural join prj1.user 
             where sum is not null
             group by {0}
         ),
         avp as (
-            select {0}, sum(l.sum)/count(*) as avp
+            select {0}, sum(l.sum)/count(*) as avp 
             from prj1.log as l natural join prj1.user
             where l.sum is not null
             group by {0}
         ),
         ua as (
-            select {0},count(distinct uid) as ua
+            select {0},count(distinct uid) as ua 
             from prj1.log natural join prj1.user
             group by {0}
         ),
         cpa as (
-            -- пользователей, имеющихся в таблице user, но не заходивших на сайт,
+            -- пользователей, имеющихся в таблице user, но не заходивших на сайт, 
             -- отрезаем с помощью поля first_visit
-            select {0}, sum(cost)/count(distinct uid) as cpa
-            from prj1.user
+            select {0}, sum(cost)/count(distinct uid) as cpa 
+            from prj1.user 
             where first_visit is not null
             group by {0}
         ),
         c1 as (
-            select
+            select 
                 {0}, count(distinct p.uid)*1.0/count(distinct l.uid) as c1
             from
                 prj1.log as l
@@ -108,14 +109,14 @@ METRICS_BY_PARAM_TMPL = """
         ),
         db_metrics as (
             select {0}, apc, avp, ua, cpa, c1
-            from
-                apc
+            from 
+                apc 
                 join avp using ({0})
                 join ua  using ({0})
                 join cpa using ({0})
                 join c1  using ({0})
         )
-        select
+        select 
             {0}, apc, avp, ua, cpa,
             c1                    as c1,
             avp  * apc            as arpc,
@@ -132,13 +133,13 @@ METRICS_BY_PARAM_TMPL = """
 ## или методом '.fetchall' (возвращается список кортежей)
 
 def get_globals(db_cursor) -> pd.DataFrame:
-    """Возвращает глобальные параметры юнит-экономики: все регионы,
+    """Возвращает глобальные параметры юнит-экономики: все регионы, 
     все методы привлечения"""
     temp_dict = {}
     db_cursor.execute(GLOBAL_PARAMS)
     (temp_dict['apc'], temp_dict['avp'], temp_dict['ua'], temp_dict['cpa'],
-        temp_dict['c1%'], temp_dict['arpc'], temp_dict['arpu'],
-        temp_dict['romi%']) = db_cursor.fetchone()
+        temp_dict['c1'], temp_dict['arpc'], temp_dict['arpu'],
+        temp_dict['romi']) = db_cursor.fetchone()
     df = pd.DataFrame(temp_dict, index=['Totals'])
     return df
 
@@ -176,7 +177,7 @@ def check_ue_grouping(grouping) -> (bool, str):
 
 def get_ue_params_by(db_cursor, grouping=None) -> pd.DataFrame:
     """Возвращает параметры юнит-экономики в соответствии с заданной
-    группировкой. Параметры:
+    группировкой. Параметры: 
     1) Объект для связи с БД
     2) Метод группировки. Одно из пяти значений:
       - None (default) -- Вызвать ф-ю get_globals() и вернуть её результат.
@@ -203,7 +204,7 @@ def get_data_by_source(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
     """Запрос общих данных по всем регионам, для разных методов привлечения
     пользователей.
     Параметры: 1) Курсор для доступа к БД
-    Возвращает: дата-фрейм, по горизонтали переменные,
+    Возвращает: дата-фрейм, по горизонтали переменные, 
         по вертикали методы привлечения
     Использует глобальную константу METRIC_NAMES
     """
@@ -233,7 +234,7 @@ def get_data_by_region(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
 def get_data_by_src_reg(db_cursor: psycopg2.extensions.cursor) -> pd.DataFrame:
     """Запрос большой таблицы по регионам и методам привлечения (3-мерный куб)
     Параметры: 1) Курсор для доступа к БД
-    Возвращает: дата-фрейм, по горизонтали метрики UE,
+    Возвращает: дата-фрейм, по горизонтали метрики UE, 
                             по вертикали двойной индекс: регионы и методы
     Использует глобальную константу METRIC_NAMES
     """
@@ -259,6 +260,11 @@ def compute_ue_data(db_cursor: psycopg2.extensions.cursor):
     ret_dict['Src and Region'] = get_data_by_src_reg(db_cursor)
     return ret_dict
 
+#
+# Следующие функции разбирают полученные из БД объекты на составные части,
+# выделяя срезы (датафреймы) для региона, способа привлечения, конкретной метрики
+# юнит-экономики.
+#
 def compute_ue_by_param(srdf: "source and region DF",
                         src_df: "totals by source DF",
                         reg_df: "totals by region DF") -> list:
@@ -275,6 +281,43 @@ def compute_ue_by_param(srdf: "source and region DF",
                                             reg_df.loc[:,param])
         results.append(param_df)
     return results
+
+def compute_ue_by_region(srdf: "source and region DF",
+                         reg_df: "totals by region DF") -> dict:
+
+    """Нарезка большого датафрейма на слайсы по регионам. В каждом слайсе будет
+    несколько строк: каждая строка соответствует методу привлечения пользователей.
+    Справа подклеивается столбец из src_df и снизу строка из reg_df в качестве
+    справочных (сводных) значений.
+    Возвращаемый датафрейм: по вертикали методы привлечения, по горизонтали
+    параметры юнит-экономики.
+    """
+    result = {}
+    regions = list(set(srdf.index.get_level_values(1)))
+    regions.sort()
+    # Перебор по всем регионам, вырезка нужного слайса из DF
+    for reg in regions:
+        result[reg] = srdf.loc(axis=0)[pd.IndexSlice[:, reg]].sort_values(
+                axis=0, ascending=False, by='romi'
+            ).append(
+                reg_df.loc[reg].rename(('AVERAGES',reg))
+            )
+        result[reg].index = result[reg].index.droplevel('region')
+    return result
+
+def compute_ue_by_source(srdf: "source and region DF",
+                         src_df: "totals by source DF") -> list:
+    sources = list(set(srdf.index.get_level_values(0)))
+    sources.sort()
+    result = {}
+    for src in sources:
+        result[src] = srdf.loc(axis=0)[pd.IndexSlice[src, :]].sort_values(
+                axis=0, ascending=False, by='romi'
+            ).append(
+                src_df.loc[src].rename((src, 'AVERAGES'))
+            )
+        result[src].index = result[src].index.droplevel('source')
+    return result
 
 def make_wide_df_with_totals(tall_df:pd.DataFrame,
                              src_series: pd.Series,
@@ -293,7 +336,8 @@ def make_wide_df_with_totals(tall_df:pd.DataFrame,
 def print_ue_data(data_frames_dict):
     """Just prints all DF's"""
     for k,v in data_frames_dict.items():
-        print("\n\n", k, "\n", v.to_csv())
+        print("\n\n{}".format(k))
+        print(v.to_csv())
 
 def do_work():
     db_conn = None
@@ -301,11 +345,24 @@ def do_work():
         db_conn = psycopg2.connect(DB_CONNECT_STRING)
         cursor = db_conn.cursor()
         data_frames = compute_ue_data(cursor)
+
+        print("\n========== Unit economics in general =============")        
         print_ue_data(data_frames)
-        by_param = compute_ue_by_param(data_frames['Src and Region'],
-                                       data_frames['Data by source'],
+#       print("\n========== Unit economics by client region =============")        
+#       by_param = compute_ue_by_param(data_frames['Src and Region'],
+#                                      data_frames['Data by source'],
+#                                      data_frames['Data by region'])
+#       print("\n\n".join([df.to_csv() for df in by_param]))
+        print("\n========== Unit economics by client region =============")        
+        by_region = compute_ue_by_region(data_frames['Src and Region'],
                                        data_frames['Data by region'])
-        print("\n\n".join([df.to_csv() for df in by_param]))
+        print_ue_data(by_region)
+
+        print("\n========== Unit economics by client region =============")        
+        by_source = compute_ue_by_source(data_frames['Src and Region'],
+                                       data_frames['Data by source'])
+        print_ue_data(by_source)
+
     except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
     except Exception as error:
@@ -326,11 +383,11 @@ if __name__ == "__main__":
 
 # access to DF: srdf.loc[:,'apc']]
 # выделение метрики и её конверсия в широкий формат:
-# c1=srdf.loc[:,'c1%'].unstack()
+# c1=srdf.loc[:,'c1'].unstack()
 #
 # Добавление новой колонки:
 
-# In [54]: c1.assign(tot_src=src.loc[:,'c1%'])
+# In [54]: c1.assign(tot_src=src.loc[:,'c1'])
 # Out[54]:
 # region                           ekb                   moscow                     orel                      spb                 vladimir                volgograd                  tot_src
 # source
@@ -341,7 +398,7 @@ if __name__ == "__main__":
 #
 # Добавление новой строки из таблицы регионов:
 #
-# In [64]: c1.append(reg.loc[:,'c1%'].rename('tot_region'))
+# In [64]: c1.append(reg.loc[:,'c1'].rename('tot_region'))
 # Out[64]:
 # region                           ekb                   moscow                     orel                      spb                 vladimir                volgograd
 # source
