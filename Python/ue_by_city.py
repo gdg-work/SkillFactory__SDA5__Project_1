@@ -284,11 +284,9 @@ def compute_ue_by_param(srdf: "source and region DF",
 
 def compute_ue_by_region(srdf: "source and region DF",
                          reg_df: "totals by region DF") -> dict:
-
     """Нарезка большого датафрейма на слайсы по регионам. В каждом слайсе будет
     несколько строк: каждая строка соответствует методу привлечения пользователей.
-    Справа подклеивается столбец из src_df и снизу строка из reg_df в качестве
-    справочных (сводных) значений.
+    Снизу подклеивается строка из reg_df в качестве справочных (сводных) значений.
     Возвращаемый датафрейм: по вертикали методы привлечения, по горизонтали
     параметры юнит-экономики.
     """
@@ -307,6 +305,11 @@ def compute_ue_by_region(srdf: "source and region DF",
 
 def compute_ue_by_source(srdf: "source and region DF",
                          src_df: "totals by source DF") -> list:
+    """Нарезка большого датафрейма на слайсы по способам привлечения. В каждом слайсе будет
+    несколько строк: каждая строка соответствует региону нахождения пользователей.
+    Снизу подклеивается строка из src_df в качестве справочных (сводных) значений.
+    Возвращаемый датафрейм: по вертикали регионы, по горизонтали параметры юнит-экономики.
+    """
     sources = list(set(srdf.index.get_level_values(0)))
     sources.sort()
     result = {}
@@ -323,9 +326,12 @@ def make_wide_df_with_totals(tall_df:pd.DataFrame,
                              src_series: pd.Series,
                              reg_series:pd.Series) -> pd.DataFrame:
     """Разворачивает датафрейм в широкий формат,  добавляет справа колонку
-    "total_source" из Series 'src_column', снизу строку 'total_region' из
-    Series region_column
+    "total_source" из Series 'src_series', снизу строку 'total_region' из
+    Series reg_series
     Параметры:
+      - tall_df: вырезка колонки из большого датафрейма,
+      - src_series: общие данные об источниках привлечения пользователей,
+      - reg_serie: данные о регионах пользователей.
     Возвращает: результирующий датафрейм
     """
     tall_df = tall_df.unstack()
@@ -334,12 +340,13 @@ def make_wide_df_with_totals(tall_df:pd.DataFrame,
     return tall_df
 
 def print_ue_data(data_frames_dict):
-    """Just prints all DF's"""
+    """Just prints all DF's from the given dictionary"""
     for k,v in data_frames_dict.items():
         print("\n\n{}".format(k))
         print(v.to_csv())
 
 def do_work():
+    """Соединяется с БД и делает всю полезную работу в этой программе, включая обработку ошибок"""
     db_conn = None
     try:
         db_conn = psycopg2.connect(DB_CONNECT_STRING)
@@ -348,20 +355,22 @@ def do_work():
 
         print("\n========== Unit economics in general =============")        
         print_ue_data(data_frames)
-#       print("\n========== Unit economics by client region =============")        
-#       by_param = compute_ue_by_param(data_frames['Src and Region'],
-#                                      data_frames['Data by source'],
-#                                      data_frames['Data by region'])
-#       print("\n\n".join([df.to_csv() for df in by_param]))
-        print("\n========== Unit economics by client region =============")        
+
+        print("\n========== Unit economics by user source =============")        
         by_region = compute_ue_by_region(data_frames['Src and Region'],
                                        data_frames['Data by region'])
         print_ue_data(by_region)
 
-        print("\n========== Unit economics by client region =============")        
+        print("\n========== Unit economics by user region =============")        
         by_source = compute_ue_by_source(data_frames['Src and Region'],
                                        data_frames['Data by source'])
         print_ue_data(by_source)
+
+        print("\n========== UE indicators by source and region =============")        
+        by_param = compute_ue_by_param(data_frames['Src and Region'],
+                                       data_frames['Data by source'],
+                                       data_frames['Data by region'])
+        print("\n\n".join([df.to_csv() for df in by_param]))
 
     except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
@@ -373,39 +382,6 @@ def do_work():
             db_conn.close()
             print("The database connection is closed")
 
-# import argparse
-
-
 if __name__ == "__main__":
     do_work()
     exit(0)
-
-
-# access to DF: srdf.loc[:,'apc']]
-# выделение метрики и её конверсия в широкий формат:
-# c1=srdf.loc[:,'c1'].unstack()
-#
-# Добавление новой колонки:
-
-# In [54]: c1.assign(tot_src=src.loc[:,'c1'])
-# Out[54]:
-# region                           ekb                   moscow                     orel                      spb                 vladimir                volgograd                  tot_src
-# source
-# cpc_adwords  69.73684210526315789500  67.60563380281690140800  68.78980891719745222900  65.21739130434782608700  67.96875000000000000000  68.12500000000000000000  67.88888888888888888900
-# cpc_direct   72.85714285714285714300  65.87301587301587301600  63.15789473684210526300  72.53521126760563380300  60.00000000000000000000  75.15923566878980891700  68.47697756788665879600
-# seo          67.62589928057553956800  70.90909090909090909100  68.07228915662650602400  63.79310344827586206900  76.22377622377622377600  73.33333333333333333300  69.85294117647058823500
-# smm          60.30534351145038167900  66.87116564417177914100  68.71165644171779141100  70.86092715231788079500  71.59090909090909090900  70.12987012987012987000  68.33688699360341151400
-#
-# Добавление новой строки из таблицы регионов:
-#
-# In [64]: c1.append(reg.loc[:,'c1'].rename('tot_region'))
-# Out[64]:
-# region                           ekb                   moscow                     orel                      spb                 vladimir                volgograd
-# source
-# cpc_adwords  69.73684210526315789500  67.60563380281690140800  68.78980891719745222900  65.21739130434782608700  67.96875000000000000000  68.12500000000000000000
-# cpc_direct   72.85714285714285714300  65.87301587301587301600  63.15789473684210526300  72.53521126760563380300  60.00000000000000000000  75.15923566878980891700
-# seo          67.62589928057553956800  70.90909090909090909100  68.07228915662650602400  63.79310344827586206900  76.22377622377622377600  73.33333333333333333300
-# smm          60.30534351145038167900  66.87116564417177914100  68.71165644171779141100  70.86092715231788079500  71.59090909090909090900  70.12987012987012987000
-# tot_region   67.79359430604982206400  67.95302013422818791900  67.24137931034482758600  67.83439490445859872600  69.32409012131715771200  71.69811320754716981100
-
-
