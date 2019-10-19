@@ -18,9 +18,10 @@ CPA - стоимость привлечения.  Стоимость привл�
 
 ARPU = C1 * ARPC, где C1 конверсия (долей от 1) и ARPC - "грязный" доход на покупателя.
 
-ARPC в нашем случае 100% маржи считается как AvP * APC, где AvP -- средний чек и APC --
-среднее число покупок на покупателя, то есть T/B, где T-Transactions, B-Byers.
-"""
+ARPC в нашем случае 100% маржи считается как
+AvP * APC, где AvP -- средний чек и APC -- среднее
+число покупок на покупателя, то есть T/B,
+где T-Transactions, B-Byers.  """
 
 import psycopg2
 import pandas as pd
@@ -28,7 +29,6 @@ import pandas as pd
 # pseudo constants
 MY_WEEKS = range(1,11)
 DB_CONNECT_STRING="user=dgolub password=VunLurk5lam host=172.17.0.2 port=5432 dbname=dgolub"
-
 METRIC_NAMES = ('apc', 'avp', 'ua', 'cpa', 'c1', 'arpc', 'arpu', 'romi')
 
 # SQL queries templates
@@ -273,13 +273,13 @@ def compute_ue_by_param(srdf: "source and region DF",
     К результирующим датафреймам подклеиваются соответствующие столбец из src_df
     и строка из reg_df в качестве "сводных" значений
     """
-    results = []
+    results = {}
     for param in srdf.columns:
         # Перебор колонок
         param_df = make_wide_df_with_totals(srdf.loc[:,param],
                                             src_df.loc[:,param],
                                             reg_df.loc[:,param])
-        results.append(param_df)
+        results[param] = param_df
     return results
 
 def compute_ue_by_region(srdf: "source and region DF",
@@ -370,7 +370,7 @@ def do_work():
         by_param = compute_ue_by_param(data_frames['Src and Region'],
                                        data_frames['Data by source'],
                                        data_frames['Data by region'])
-        print("\n\n".join([df.to_csv() for df in by_param]))
+        print_ue_data(by_param)
 
     except (psycopg2.Error) as error :
         print ("Error while working with PostgreSQL", error)
